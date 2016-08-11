@@ -18,7 +18,7 @@ In Grothendieck we implement the following core concepts:
 Category Theory
 Abstract Algebra
 Algebraic Topology
-W-star Calculus
+W* Calculus
 
 Forge-Delite-LMS
 ================
