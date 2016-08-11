@@ -1,0 +1,18 @@
+# Delite project properties
+[delite]
+
+# location of the JVM to use with Delite. 
+# equivalent to setting the JAVA_HOME environment variable.
+#java.home=/home/user/java/jdk1.7.0_b121_x86_64
+
+# uncomment to override default lightweigt modular staging (LMS) location.
+# equivalent to setting the LMS_HOME environment variable.
+#libs.lms.home=/home/user/projects/virtualization-lms-core
+
+# used for the benchmark/gather-numbers.py benchmarking script. not
+# required for typical Delite usage.
+apps.data=/home/user/delite
+
+# test options for sbt tests
+tests.verbose=false
+tests.threads=1

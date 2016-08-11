@@ -1,0 +1,337 @@
+#!/usr/bin/env python
+
+from optparse import OptionParser
+from time import localtime, strftime
+from string import *
+import ConfigParser
+import os, sys, shutil
+import stat
+import math
+import fileinput
+
+DELITE_HOME = os.getenv("DELITE_HOME")
+FORGE_HOME = os.getenv("FORGE_HOME")
+FORGE_GENERATED = "build" # TODO
+SCALA_MAJOR_VERS = "2.11"
+SCALA_MINOR_VERS = "2"
+
+def err(s):
+    exit("error: " + s)
+
+def warn(s):
+    print("warn: " + s)
+
+def main():
+    usage = "usage: %prog <dsl name> [options]"
+    parser = OptionParser(usage)
+    parser.add_option("-d", "--dest", action="store", dest="build_dir", default=os.getenv("PWD")+"/published/", help="directory to publish generated DSL")
+    parser.add_option("-c", "--clean", action="store_true", dest="build_clean", default=False, help="nuke the build directory if it already exists")
+    parser.add_option("--clean-extern", action="store_true", dest="extern_clean", default=False, help="always republish extern files")
+    parser.add_option("--use-jars", action="store_true", dest="use_jars", default=False, help="generate an SBT build file for the DSL that uses managed dependencies for LMS/Delite")
+    parser.add_option("--no-apps", action="store_false", dest="copy_apps", default=True, help="do not copy included DSL apps to published folder")
+
+    (opts, args) = parser.parse_args()
+    if len(args) < 1:
+        parser.error("a dsl name must be passed to publish as an argument")
+
+    initialize()
+    checkEnv()
+    publish(args[0], opts)
+
+def initialize():
+    pass
+
+def checkEnv():
+    global FORGE_HOME
+
+    if FORGE_HOME is None:
+        #try to check if it is the current directory
+        script_path = os.path.dirname(__file__)
+        cand_home = os.path.split(script_path)[0]
+        if os.path.isfile(cand_home + "/forge.key"):
+            FORGE_HOME = cand_home
+        else:
+            err("The FORGE_HOME environment variable must be defined")
+
+def printEnv():
+    print("======== REQUIRED FORGE PUBLISH ENVIRONMENT VARIABLES =========")
+    print("FORGE_HOME = " + FORGE_HOME)
+
+def sbtBuildFileHeader(dsl):
+    s = Template("""
+import sbt._
+import Keys._
+import Tests._
+
+object ${dslName}Build extends Build {
+  if (System.getProperty("showSuppressedErrors") == null) System.setProperty("showSuppressedErrors", "false")
+  val virtScala = "${scala_major_vers}.${scala_minor_vers}"
+  val virtBuildSettingsBase = Project.defaultSettings ++ Seq(
+    organization := "stanford-ppl",
+    scalaOrganization := "org.scala-lang.virtualized",
+    scalaVersion := virtScala,
+
+    publishArtifact in (Compile, packageDoc) := false,
+    // needed for scala.tools, which is apparently not included in sbt's built in version
+    libraryDependencies += "org.scala-lang" % "scala-library" % virtScala,
+    libraryDependencies += "org.scala-lang" % "scala-compiler" % virtScala,
+    libraryDependencies += "org.scalatest" % "scalatest_${scala_major_vers}" % "2.2.2",
+    libraryDependencies += "com.google.guava" % "guava" % "17.0",
+    libraryDependencies += "org.apache.commons" % "commons-math" % "2.2",
+    libraryDependencies += "commons-io" % "commons-io" % "2.4",
+    // cluster deps
+    libraryDependencies += "com.google.protobuf" % "protobuf-java" % "2.5.0",
+    libraryDependencies += "org.apache.mesos" % "mesos" % "0.20.1",
+    libraryDependencies += "org.apache.hadoop" % "hadoop-common" % "2.7.1",
+    libraryDependencies += "org.apache.hadoop" % "hadoop-client" % "2.7.1",
+    libraryDependencies += "org.apache.hadoop" % "hadoop-hdfs" % "2.7.1",
+    // used in delitec to access jars
+    retrieveManaged := true,
+    scalacOptions += "-Yno-generic-signatures",
+    scalacOptions += "-Yvirtualize",
+    initialCommands in console += "import ${dslNameLowerCase}.library._; val ${dslName} = new ${dslName}REPL { def main() = {} }; import ${dslName}._"
+  )
+
+  val virtBuildSettings = virtBuildSettingsBase ++ Seq(
+    scalaSource in Compile <<= baseDirectory(_ / "src")
+  )
+""")
+    return s.substitute(dslName=dsl, dslNameLowerCase=dsl.lower(), scala_major_vers=SCALA_MAJOR_VERS, scala_minor_vers=SCALA_MINOR_VERS)
+
+# this version uses local classes rather than jars. is it any better from an incremental compilation standpoint?
+def sbtBuildFileLocal(dsl):
+    s = Template("""
+${header}
+
+  lazy val LMS_HOME = sys.env.get("LMS_HOME").getOrElse(error("Please set the LMS_HOME environment variable."))
+  lazy val DELITE_HOME = sys.env.get("DELITE_HOME").getOrElse(error("Please set the DELITE_HOME environment variable."))
+
+  val scalacp = "/target/scala-${scala_major_vers}/classes/"
+  lazy val lms = file(LMS_HOME + scalacp)
+  lazy val deliteFramework = file(DELITE_HOME + "/framework" + scalacp)
+  lazy val deliteRuntime = file(DELITE_HOME + "/runtime" + scalacp)
+  lazy val deliteTest = file(DELITE_HOME + "/framework/delite-test" + scalacp)
+
+  val deps = Seq(
+    unmanagedClasspath in Compile <+= (baseDirectory) map { bd => Attributed.blank(lms) },
+    unmanagedClasspath in Compile <+= (baseDirectory) map { bd => Attributed.blank(deliteFramework) },
+    unmanagedClasspath in Compile <+= (baseDirectory) map { bd => Attributed.blank(deliteRuntime) },
+    unmanagedClasspath in Compile <+= (baseDirectory) map { bd => Attributed.blank(deliteTest) },
+    unmanagedClasspath in Test <+= (baseDirectory) map { bd => Attributed.blank(lms) },
+    unmanagedClasspath in Test <+= (baseDirectory) map { bd => Attributed.blank(deliteFramework) },
+    unmanagedClasspath in Test <+= (baseDirectory) map { bd => Attributed.blank(deliteRuntime) },
+    unmanagedClasspath in Test <+= (baseDirectory) map { bd => Attributed.blank(deliteTest) }
+  )
+
+${footer}
+""")
+    return s.substitute(header=sbtBuildFileHeader(dsl), footer=sbtBuildFileFooter(dsl), scala_major_vers=SCALA_MAJOR_VERS, scala_minor_vers=SCALA_MINOR_VERS)
+
+def sbtBuildFile(dsl):
+    s = Template("""
+${header}
+
+  val virtualization_lms_core = "EPFL" % "lms_${scala_major_vers}" % "0.3-SNAPSHOT"
+  val delite_framework = "stanford-ppl" % "framework_${scala_major_vers}" % "0.1-SNAPSHOT"
+  val delite_runtime = "stanford-ppl" % "runtime_${scala_major_vers}" % "0.1-SNAPSHOT"
+  val delite_tests = "stanford-ppl" % "delite-test_${scala_major_vers}" % "0.1-SNAPSHOT"
+
+  val deps = Seq(
+    libraryDependencies += virtualization_lms_core,
+    libraryDependencies += delite_framework,
+    libraryDependencies += delite_runtime,
+    libraryDependencies += delite_tests
+  )
+
+${footer}
+""")
+    return s.substitute(header=sbtBuildFileHeader(dsl), footer=sbtBuildFileFooter(dsl), scala_major_vers=SCALA_MAJOR_VERS)
+
+def sbtBuildFileFooter(dsl):
+    s = Template("""
+  // HACK alert: with fork = true, sbt appears to ignore the -D properties passed on the command line,
+  // which breaks test_all. Here we manually look for the currently relevant options. Needs a proper fix!
+  val testOptions = Seq("-Dtests.verbose="+System.getProperty("tests.verbose", "false"),
+                        "-Dtests.threads="+System.getProperty("tests.threads", "1"),
+                        "-Dtests.targets="+System.getProperty("tests.targets", "scala"))
+
+  // Test suites are run individually in different JVMs. Set TEST_JAVA_OPTS to configure JAVA_OPTS for each suite.
+  val testJavaOptionsStr = sys.env.getOrElse("TEST_JAVA_OPTS", "")
+  // TEST_JAVA_OPTS cannot be empty or SBT crashes when it gets a non-empty Seq containing an empty string.
+  val testJavaOptions = if (testJavaOptionsStr == "") Seq() else testJavaOptionsStr.split(" ").toSeq
+
+  def separateTests(tests: Seq[TestDefinition]) = {
+    if (tests.isEmpty) Seq(new Group("", Seq(), SubProcess(Seq()))) //workaround for sbt crash on empty tests
+    else tests map { test => new Group(test.name, Seq(test), SubProcess(testOptions ++ testJavaOptions)) }
+  }
+
+  // build targets
+  lazy val ${dslName} = Project("${dslName}", file("."), settings = virtBuildSettings ++ deps) dependsOn(${dslName}Apps) // default
+  lazy val ${dslName}Shared = Project("${dslName}-shared", file("shared"), settings = virtBuildSettings ++ deps)
+  lazy val ${dslName}Comp = Project("${dslName}-comp", file("compiler"), settings = virtBuildSettings ++ deps) dependsOn(${dslName}Shared)
+  lazy val ${dslName}Lib = Project("${dslName}-lib", file("library"), settings = virtBuildSettings ++ deps) dependsOn(${dslName}Shared)
+  lazy val ${dslName}Ident = Project("${dslName}-ident", file("ident"), settings = virtBuildSettings ++ deps) dependsOn(${dslName}Shared)
+  lazy val ${dslName}Apps = Project("${dslName}-apps", file("apps"), settings = virtBuildSettings ++ deps) dependsOn(${dslName}Comp, ${dslName}Lib, ${dslName}Ident)
+  lazy val ${dslName}Tests = Project("${dslName}-tests", file("tests"), settings = virtBuildSettingsBase ++ deps ++ Seq(
+    scalaSource in Test <<= baseDirectory(_ / "src"),
+    parallelExecution in Test := false,
+    concurrentRestrictions in Test += Tags.limitAll(1), // don't run anything in parallel
+    // Required to use native libraries within tests
+    // See http://stackoverflow.com/questions/19425613/unsatisfiedlinkerror-with-native-library-under-sbt
+    // and http://www.scala-sbt.org/release/docs/Forking.html
+    testGrouping in Test <<= definedTests in Test map separateTests,
+    fork := true
+  )) dependsOn(${dslName}Comp, ${dslName}Lib)
+}
+""")
+    return s.substitute(dslName=dsl)
+
+def get_files(path):
+    return [d + "/" + f for (d, n, fs) in os.walk(path) for f in fs]
+
+def check_conflict(base_dir, generated_dir):
+    base = set(get_files(base_dir))
+    gen = set(get_files(generated_dir))
+    intersect = base.intersection(gen)
+    if (len(intersect) != 0):
+        for f in intersect:
+            err("extern file " + f + " conflicts with generated file")
+
+def rename_all(src, mappings):
+    replfiles = get_files(src)
+    infiles = fileinput.FileInput(replfiles, inplace = 1)
+    for line in infiles:
+        for orig,repl in mappings.iteritems():
+          line = line.replace(orig,repl)
+        sys.stdout.write(line)
+
+def publish_static_extern(dsl, build_dir, scratch_dir):
+    static_dir = FORGE_HOME + "/static/extern/"
+    check_conflict(static_dir, build_dir)
+
+    # copy and perform name replacement of static extern files on the fly
+    os.system("rsync -r " + static_dir + " " + scratch_dir)
+    rename_all(scratch_dir, {'HUMAN_DSL_NAME': dsl, 'LOWERCASE_DSL_NAME': dsl.lower()})
+
+    # we need to mirror the package layout convention defined in Forge
+    all_targets = ['shared','compiler','library']
+    targets = [t for t in all_targets if os.path.exists(build_dir + t + "/src/")]
+    for t in targets:
+        dest_root = t + "/"
+        dest = dest_root + "src/" + dsl.lower() + "/" + t + "/"
+        src_root = scratch_dir + "/" + t  + "/"
+        src = src_root + "src/"
+        os.system("rsync -r " + src + " " + build_dir + "/" + dest)
+        os.system("rsync -q " + src_root + "*" + " " + build_dir + "/" + dest_root)
+
+def publish_dsl_extern(dsl, build_dir, scratch_dir, final_name):
+    extern_dir = FORGE_HOME + "/extern/" + dsl + "/"
+    if not os.path.exists(extern_dir):
+        return
+    check_conflict(extern_dir, build_dir)
+
+    # recursively publish dependencies
+    if os.path.exists(extern_dir + ".dependencies"):
+        for line in open(extern_dir + ".dependencies"):
+          publish_dsl_extern(line.rstrip("\n"), build_dir, scratch_dir, final_name)
+
+    # we need to mirror the package layout convention defined in Forge
+    all_targets = ['shared','compiler','library']
+    targets = [t for t in all_targets if os.path.exists(build_dir + t + "/src/")]
+    tmp_dest = scratch_dir + dsl + "_extern/"
+    for t in targets:
+        dest_root = t + "/"
+        dest = dest_root + "src/" + final_name.lower() + "/" + t + "/"
+        src_root = extern_dir + "/" + t  + "/"
+        src = src_root + "src/"
+
+        if dsl != final_name:
+            if not os.path.exists(tmp_dest + dest):
+                  os.makedirs(tmp_dest + dest)
+            os.system("rsync -r " + src + " " + tmp_dest + dest)
+            os.system("rsync -q " + src_root + "*" + " " + tmp_dest + dest_root)
+        else:
+            os.system("rsync -r " + src + " " + build_dir + "/" + dest)
+            os.system("rsync -q " + src_root + "*" + " " + build_dir + "/" + dest_root)
+
+    if dsl != final_name:
+        # dependencies need to have dsl names remapped
+        rename_all(tmp_dest, {dsl: final_name, dsl.lower(): final_name.lower()})
+        os.system("rsync -r " + tmp_dest + " " + build_dir)
+
+def publish(dsl, opts):
+    global DELITE_HOME
+    global FORGE_HOME
+    global FORGE_GENERATED
+
+    generated_root = FORGE_GENERATED + "/" + dsl + "/"
+    if not os.path.isdir(generated_root):
+        err("could not find generated DSL " + dsl + ". (did you forget to run forge?)")
+
+    build_dir = opts.build_dir + "/" + dsl + "/"
+
+    print "== Publishing " + dsl + " to " + build_dir
+    if os.path.exists(build_dir) and opts.build_clean:
+        shutil.rmtree(build_dir)
+    if not os.path.exists(build_dir):
+        os.makedirs(build_dir)
+
+    # source code
+    os.system("rsync -r " + FORGE_GENERATED + "/" + dsl + "/" + " " + build_dir)
+
+    # extern
+    scratch_dir = FORGE_GENERATED + "/.scratch/"
+    # in the common case, extern dependencies don't change - so we
+    # only republish it if the scratch directory does not exist
+    if not os.path.exists(scratch_dir) or opts.extern_clean:
+        if not os.path.exists(scratch_dir):
+            os.makedirs(scratch_dir)
+        publish_static_extern(dsl, build_dir, scratch_dir)
+        publish_dsl_extern(dsl, build_dir, scratch_dir, dsl)
+
+    # apps
+    if opts.copy_apps:
+        apps_dir = FORGE_HOME + "/apps/" + dsl + "/"
+        if os.path.exists(apps_dir):
+            os.system("rsync -r " + apps_dir + " " + build_dir + "/apps/")
+
+    # tests
+    tests_dir = FORGE_HOME + "/tests/" + dsl + "/"
+    if os.path.exists(tests_dir):
+        os.system("rsync -r " + tests_dir + " " + build_dir + "/tests/")
+
+    # sbt project
+    if not os.path.exists(build_dir + "/project/"):
+        os.mkdir(build_dir + "/project/")
+    buildFile = open(build_dir + "/project/Build.scala", 'w')
+    if opts.use_jars:
+        buildFile.write(sbtBuildFile(dsl))
+    else:
+        buildFile.write(sbtBuildFileLocal(dsl))
+    buildFile.close()
+    shutil.copyfile(FORGE_HOME + "/static/build.properties", build_dir + "/project/build.properties")
+
+    # executable scripts
+    if not os.path.exists(build_dir + "/bin/"):
+        os.mkdir(build_dir + "/bin/")
+        out_delitec = build_dir+"/bin/delitec"
+        shutil.copyfile(FORGE_HOME + "/static/delitec-wrapper", out_delitec)
+        os.chmod(out_delitec, stat.S_IXUSR | os.stat(out_delitec)[stat.ST_MODE])
+
+        out_delite = build_dir+"/bin/delite"
+        shutil.copyfile(FORGE_HOME + "/static/delite-wrapper", out_delite)
+        os.chmod(out_delite, stat.S_IXUSR | os.stat(out_delite)[stat.ST_MODE])
+
+        shutil.copyfile(FORGE_HOME + "/static/delitecommon-wrapper.py", build_dir+"/bin/delitecommon.py")
+
+        cp_executable_script(DELITE_HOME + "/bin/delitep", build_dir + "/bin/delitep")
+        cp_executable_script(DELITE_HOME + "/bin/server.py", build_dir + "/bin/server.py")
+
+    print "[forge]: Publishing complete."
+
+def cp_executable_script(src, dst):
+    shutil.copyfile(src, dst)
+    os.chmod(dst, stat.S_IXUSR | os.stat(dst)[stat.ST_MODE])
+
+if __name__ == "__main__":
+    main()

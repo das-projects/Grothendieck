@@ -1,0 +1,168 @@
+#!/usr/bin/env python
+
+from optparse import OptionParser
+import multiprocessing
+import os, sys, datetime
+import math
+from socket import gethostname
+from string import *
+import ConfigParser
+from time import localtime, strftime
+
+import delitecommon
+from delitecommon import err, warn, info
+
+DSLs = ['optiql','multi-dsl']
+LMS_HOME = os.getenv("LMS_HOME") #should be set if LMS is provided directly from class files rather than a lib_managed jar
+
+def main():
+    usage = "usage: %prog <application runner> [staging args] [options]"
+    parser = OptionParser(usage)
+    parser.add_option("-v", "--verbose", dest="verbose", action="store_true", default=False, help="print delitec environment settings")
+    parser.add_option("--nb", dest="no_blas", action="store_true", default=False, help="disable blas calls")
+    parser.add_option("--nf", dest="no_fusion", action="store_true", default=False, help="disables op fusion")
+    parser.add_option("--ns", dest="no_soa", action="store_true", default=False, help="disables soa transform")
+    parser.add_option("--nm", dest="no_multidimgpu", action="store_true", default=False, help="disables multidim GPU codegen")
+    parser.add_option("--cuda", dest="cuda", action="store_true", default=False, help="enables CUDA generation")
+    parser.add_option("--opencl", dest="opencl", action="store_true", default=False, help="enables OpenCL generation")
+    parser.add_option("--cpp", dest="cpp", action="store_true", default=False, help="enables cpp generation")
+    parser.add_option("-c", "--serializable", dest="cluster", action="store_true", default=False, help="enables serialization and cluster support")
+    parser.add_option("-p", "--profile", dest="profile", action="store_true", default=False, help="enables application profiling")
+    parser.add_option("-O", dest="optimize", action="store", default=0, help="sets advanced optimization level")
+    parser.add_option("--debug", dest="debug", action="store_true", default=False, help="enables verbose compiler output")
+    parser.add_option("--Xdebug", dest="xdebug", action="store_true", default=False, help="enables LMS debug output; for compiler writers only")
+    parser.add_option("--Xnocache", dest="xnocache", action="store_true", default=False, help="disables caching during staging; may reduce memory footprint but decrease code gen performance")
+    parser.add_option("-d", "--dest", action="store", dest="build_dir", default=os.getenv("PWD"), help="output location for generated files")
+    parser.add_option("--dump_exception", dest="dump_exception", action="store_true", default=False, help="Dump generation failed exceptions")
+    parser.add_option("--jar", dest="jar_app", action="store_true", default=False, help="save generated output in a jar for distribution")
+    parser.add_option("--int64", dest ="long_int", action="store_true", default=False, help="generate code with 64-bit integers")
+    parser.add_option("--strict_control", dest ="strict_control", action="store_true", default=False, help="enable LMS control dependencies (may suppress some optimizations)")
+
+    (opts, args) = parser.parse_args()
+    if len(args) < 1:
+        parser.error("an application file must be passed to delitec as an argument")
+
+    delitecommon.initialize()
+    checkLMSEnv()
+    stage(args[0], args[1:len(args)], opts)
+
+def checkLMSEnv():
+    global LMS_HOME
+
+    if LMS_HOME is None:
+        if "libs.lms.home" in delitecommon.props:
+            lms_home = delitecommon.props["libs.lms.home"]
+            if not os.path.isdir(lms_home):
+                warn("couldn't find the LMS library at: " + lms_home)
+            else:
+                LMS_HOME = lms_home
+
+    if LMS_HOME is None:
+          lms_home = delitecommon.HYPER_HOME + "/lib_managed/jars/EPFL/" + delitecommon.lms_version + "/"
+          if not os.path.isdir(lms_home):
+              err("couldn't find the LMS library at: " + lms_home + ". Please set the LMS_HOME environment variable or libs.lms.home entry in delite.properties manually.")
+
+def stage(runner, params, opts):
+    java_opts = os.getenv("JAVA_OPTS", "")
+
+    build_dir = opts.build_dir + os.sep + "generated" + os.sep + runner + os.sep
+    java_opts = java_opts + " -server" + " -Ddelite.home.dir=" + delitecommon.DELITE_HOME + " -Ddelite.build.dir=" + build_dir + " -Ddelite.deg.filename=" + runner + ".deg"
+    if opts.no_blas == False:
+        java_opts = java_opts + " -Ddelite.extern.blas"
+    if opts.cuda == True:
+        java_opts = java_opts + " -Ddelite.generate.cpp"
+        java_opts = java_opts + " -Ddelite.generate.cuda"
+    if opts.opencl == True:
+        java_opts = java_opts + " -Ddelite.generate.cpp"
+        java_opts = java_opts + " -Ddelite.generate.opencl"
+    if opts.cpp == True:
+        java_opts = java_opts + " -Ddelite.generate.cpp"
+    if opts.cluster == True:
+        java_opts = java_opts + " -Ddelite.generate.serializable"
+    if opts.no_fusion == True:
+        java_opts = java_opts + " -Ddelite.enable.fusion=false"
+    if opts.no_soa == True:
+        java_opts = java_opts + " -Ddelite.enable.soa=false"
+    if opts.profile == True:
+        java_opts = java_opts + " -Ddelite.enable.profiler=true"
+    if opts.optimize > 0:
+        java_opts = java_opts + " -Ddelite.optimize="+str(opts.optimize)
+    if opts.debug == True:
+        java_opts = java_opts + " -Ddelite.debug"
+    if opts.xdebug == True:
+        java_opts = java_opts + " -Dlms.verbosity=1"
+    if opts.xnocache == False:
+        java_opts = java_opts + " -Ddelite.cache.syms"
+    if opts.dump_exception == True:
+        java_opts = java_opts + " -Ddelite.dump.exception"
+    if opts.no_multidimgpu == True:
+        java_opts = java_opts + " -Ddelite.enable.gpu.multidim=false"
+    if opts.long_int == True:
+        java_opts = java_opts + " -Ddelite.integer.size=long"
+    if opts.strict_control == True:
+        java_opts = java_opts + " -Dlms.controldeps=true"
+    java_opts = java_opts + " -Dnested.variants.level=0"
+
+    DELITE_HOME = delitecommon.DELITE_HOME
+
+    #add classpaths for Delite
+    scala_major_id = delitecommon.scala_major_id
+    old_cp = os.getenv("CLASSPATH", "")
+    cp = " -cp "
+    cp = cp + old_cp + os.pathsep
+    if LMS_HOME:
+        cp = cp + LMS_HOME + "/target/" + scala_major_id + "/classes" + os.pathsep
+    cp = cp + DELITE_HOME + "/framework/target/" + scala_major_id + "/classes" + os.pathsep
+
+    #DSL cps
+    for dsl in DSLs:
+      cp = cp + DELITE_HOME + "/dsls/" + dsl + "/target/" + scala_major_id + "/classes" + os.pathsep
+      cp = cp + DELITE_HOME + "/dsls/" + dsl + "/target/" + scala_major_id + "/test-classes" + os.pathsep
+      cp = cp + DELITE_HOME + "/apps/" + dsl + "/target/" + scala_major_id + "/classes" + os.pathsep
+
+    #Delite app cp
+    cp = cp + DELITE_HOME + "/apps/delite/target/" + scala_major_id + "/classes" + os.pathsep
+
+    #test cp
+    cp = cp + DELITE_HOME + "/framework/delite-test/target/" + scala_major_id + "/classes" + os.pathsep
+    cp = cp + DELITE_HOME + "/framework/delite-test/target/" + scala_major_id + "/test-classes" + os.pathsep
+    cp = cp + DELITE_HOME + "/tests/target/" + scala_major_id + "/classes" + os.pathsep
+    cp = cp + DELITE_HOME + "/target/" + scala_major_id + "/test-classes" + os.pathsep
+
+    # add all managed libs
+    # caveat: scalatest pulls in some non-virtualized scala dependencies but they conflict with the scala-virtualized versions
+    jars = [os.path.join(d,f) for (d, n, fs) in os.walk(delitecommon.HYPER_HOME + "/lib_managed/") if not (d.count("/org.scala-lang/") > 0) for f in fs]
+    for j in jars:
+      cp = cp + j + os.pathsep
+
+    java_opts = java_opts + cp
+    #os.putenv("JAVA_OPTS", java_opts)
+
+    #MKL ENV
+    os.putenv("LD_PRELOAD", delitecommon.JAVA_HOME + "/jre/lib/amd64/libjsig.so")
+
+    if opts.verbose:
+      delitecommon.printEnv()
+      if LMS_HOME:
+        print("LMS_HOME = " + LMS_HOME)
+      else:
+        print("LMS_HOME is UNDEFINED")
+      print(java_opts)
+
+    info("Generating DEG file with options: " + str(opts))
+    java_cmd = delitecommon.JAVA_HOME + "/bin/java " + java_opts + " " + runner + " " + ' '.join(params)
+    #print java_cmd
+    ecode = os.system(java_cmd)
+    if ecode != 0:
+        err("Delite compilation failed")
+
+    #jar generated code
+    if opts.jar_app == True:
+        jar_cmd = delitecommon.JAVA_HOME + "/bin/jar cfM " + runner + ".jar " + runner + ".deg -C " + build_dir
+        #print jar_cmd
+        ecode = os.system(jar_cmd)
+        if ecode != 0:
+            err("Unable to jar Delite compilation output")
+
+if __name__ == "__main__":
+    main()

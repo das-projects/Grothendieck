@@ -1,0 +1,77 @@
+### first
+register replacement for Sym(1)
+register replacement for Sym(2)
+register replacement for Sym(5)
+--- code ---
+val x1 = VectorZeros(Const(100))
+val x3 = x0 > 0
+val x4 = if (x3) {
+x1
+} else {
+val x2 = VectorZeros(Const(50))
+x2
+}
+val x5 = VectorPlus(Sym(4),Sym(1))
+val x6 = println(x5)
+
+### next
+install replacement for Sym(1)
+install replacement for Sym(2)
+install replacement for Sym(5)
+register replacement for Sym(15)
+register replacement for Sym(17)
+register replacement for Sym(18)
+--- code ---
+val x3 = x0 > 0
+val x9 = LoopArray(100) { x8 => 
+0.0
+}
+val x10 = new VectorDouble(x9,100)
+val x14 = if (x3) {
+x10
+} else {
+val x12 = LoopArray(50) { x11 => 
+0.0
+}
+val x13 = new VectorDouble(x12,50)
+x13
+}
+val x15 = VectorLength(Sym(14))
+val x20 = LoopArray(x15) { x16 => 
+val x17 = VectorApply(Sym(14),Sym(16))
+val x18 = VectorApply(Sym(10),Sym(16))
+val x19 = x17+x18
+x19
+}
+val x21 = new VectorDouble(x20,x15)
+val x22 = println(x21)
+
+### next
+install replacement for Sym(15)
+install replacement for Sym(17)
+install replacement for Sym(18)
+--- code ---
+val x3 = x0 > 0
+val x25 = LoopArray(100) { x24 => 
+0.0
+}
+val x30 = if (x3) {
+val x26 = new VectorDouble(x25,100)
+x26
+} else {
+val x28 = LoopArray(50) { x27 => 
+0.0
+}
+val x29 = new VectorDouble(x28,50)
+x29
+}
+val x31 = x30.length
+val x33 = x30.data
+val x37 = LoopArray(x31) { x32 => 
+val x34 = x33.apply(x32)
+val x35 = x25.apply(x32)
+val x36 = x34+x35
+x36
+}
+val x38 = new VectorDouble(x37,x31)
+val x39 = println(x38)
