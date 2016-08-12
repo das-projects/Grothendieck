@@ -1,6 +1,6 @@
 Grothendieck
 ============
-The aim of this project is to develop a language which understands abstract mathematics like abstract algebra, algebraic topology and W-star Calculus. The foundations are heirarchically
+The aim of this project is to develop a language which understands abstract mathematics like abstract algebra, algebraic topology and W* Calculus. The foundations are heirarchically
  builds the abstract concepts based purely on category-theoretic language.
  
 "The purpose of abstraction is not to be vague, but to create a new semantic level in which one can be absolutely precise" - Edsger Dijkstra
