@@ -1,5 +1,4 @@
 *.class
-*.iml
 *.ipr
 *.iws
 *.idea
@@ -26,3 +25,5 @@ test-out/*/*-log
 test-out/*/*-skel
 test-out/*/*-src
 profiler/less
+/build-grothendieck-binary.sh
+forge/preprocessor/project/
