@@ -15,10 +15,13 @@ way. This idea thus can be used to hierarchically define and classify most branc
 
 In Grothendieck we implement the following core concepts:
 
-Category Theory
-Abstract Algebra
-Algebraic Topology
-W* Calculus
+1) Category Theory
+
+2) Abstract Algebra
+
+3) Algebraic Topology
+
+4) W* Calculus
 
 Forge-Delite-LMS
 ================
@@ -39,12 +42,12 @@ Applied Math Layer
 
 One we have all the abstract mathematical foundation taken care of, we develop the Applied Math layer using the same ideology. Since the core of the language is extremely expressive and fully optimised, we only need to think about the algorithms and not their implementation details. We develop the following theories in this layer:
 
-Graph Theory and Data Structures
-Probability Theory
-Convex Optimisation: Proximal Type Algorithms
-Stochastic Optimisation: Stochastic Gradient Descent, Expectation Propagation, Sampling Methods
-Ordinary/Partial Differential Equations
-Tensor Network Theory
+1) Graph Theory and Data Structures
+2) Probability Theory
+3) Convex Optimisation: Proximal Type Algorithms
+4) Stochastic Optimisation: Stochastic Gradient Descent, Expectation Propagation, Sampling Methods
+5) Ordinary/Partial Differential Equations
+6) Tensor Network Theory
 
 
 
